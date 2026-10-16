@@ -74,7 +74,8 @@ int main(int argc, char** argv) {
         else if (a == "--help" || a == "-h") {
             std::printf(
                 "seedvr2_cpp [options]\n"
-                "  --root DIR      repository root (default: parent of the executable, or CWD)\n"
+                "  --root DIR      repository root (contains models/; auto-detected from the\n"
+                "                  current directory or the executable's directory)\n"
                 "  --gguf PATH     DiT gguf model\n"
                 "  --vae PATH      quantised VAE .gguf\n"
                 "  --vae-device D  device for the ggml VAE: CUDA0 (default) / CPU / Vulkan0\n"
@@ -108,13 +109,16 @@ int main(int argc, char** argv) {
         cliParams.vae_tile_overlap = cliParams.vae_tile_size - 8;
     }
 
-    // resolve the repository root: search upwards for models/ and seedvr2_videoupscaler/
+    // Resolve the repository root: search upwards (from the current working
+    // directory, then from the executable's directory) for a directory that
+    // contains models/.  Everything else (backend.json, the default model
+    // paths) is then relative to that root.
     if (repoRoot.empty()) {
         std::vector<fs::path> cands = { fs::current_path(), exe_dir() };
         for (auto& c : cands) {
             fs::path d = c;
             for (int up = 0; up < 4 && !d.empty(); ++up) {
-                if (fs::exists(d / "models") && fs::exists(d / "seedvr2_videoupscaler")) {
+                if (fs::exists(d / "models")) {
                     repoRoot = d.string();
                     break;
                 }
@@ -122,8 +126,10 @@ int main(int argc, char** argv) {
             }
             if (!repoRoot.empty()) break;
         }
+        // no models/ dir found: fall back to the executable's directory, so the
+        // default paths are <exe_dir>/models/... (or pass --gguf / --vae)
+        if (repoRoot.empty()) repoRoot = exe_dir().empty() ? fs::current_path().string() : exe_dir();
     }
-    require(!repoRoot.empty(), "cannot locate repository root (expected ./models and ./seedvr2_videoupscaler). Use --root.");
     srvCfg.root = repoRoot;
 
     fs::path root(repoRoot);
@@ -141,10 +147,22 @@ int main(int argc, char** argv) {
             }
         }
     }
-    if (engCfg.gguf_path.empty()) engCfg.gguf_path = (root / "models" / "seedvr2_ema_3b-Q8_0.gguf").string();
+    if (engCfg.gguf_path.empty()) {
+        engCfg.gguf_path = (root / "models" / "seedvr2_ema_3b-Q8_0.gguf").string();
+        if (!fs::exists(engCfg.gguf_path)) {
+            SEEDVR_LOG(LogLevel::Error, "DiT model not found: " + engCfg.gguf_path +
+                                           "  (put it in <root>/models or pass --gguf)");
+            return 2;
+        }
+    }
     if (engCfg.vae_path.empty()) {
         // default: the fp16 ggml VAE
         engCfg.vae_path = (root / "models" / "ema_vae_fp16.gguf").string();
+        if (!fs::exists(engCfg.vae_path)) {
+            SEEDVR_LOG(LogLevel::Error, "VAE model not found: " + engCfg.vae_path +
+                                           "  (put it in <root>/models or pass --vae)");
+            return 2;
+        }
     }
 
     SEEDVR_LOG(LogLevel::Info, "repo root: " + repoRoot);
