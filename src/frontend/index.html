@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.ico">
+<title>SeedVR2 · 视频/图像超分 (C++ / ggml-CUDA)</title>
+<style>
+:root{
+  --bg:#0b0e14; --panel:#131824; --panel2:#1a2030; --line:#252c3d;
+  --tx:#e6e9f0; --tx2:#96a0b5; --acc:#5b8cff; --acc2:#22d3a5; --warn:#ffb020; --err:#ff5c5c;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--tx);font:14px/1.5 "Segoe UI",system-ui,-apple-system,"Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;gap:14px;padding:10px 18px;background:linear-gradient(90deg,#151b2b,#0f1420);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px}
+header .sub{color:var(--tx2);font-size:12px}
+.pill{margin-left:auto;font-size:12px;padding:4px 10px;border-radius:99px;border:1px solid var(--line);background:#0f1420;color:var(--tx2)}
+
+/* top-bar compute-backend switcher */
+header .devs{display:flex;align-items:center;gap:6px}
+header .devs .lbl{font-size:11px;color:var(--tx2)}
+header .devs select{width:auto;font-size:11px;padding:3px 6px;border-radius:6px}
+header .devs button{font-size:11px;padding:4px 10px}
+header .devs button:disabled{opacity:.45;cursor:default}
+
+/* checkbox rows */
+label.chk{display:flex;align-items:flex-start;gap:6px;font-size:11px;color:var(--tx2);margin-top:8px;cursor:pointer;line-height:1.4}
+label.chk input{width:auto;margin:1px 0 0}
+.pill.ok{color:#0b0e14;background:var(--acc2);border-color:transparent;font-weight:600}
+.pill.bad{color:#fff;background:var(--err);border-color:transparent}
+main{display:grid;grid-template-columns:330px 1fr;gap:14px;padding:14px;min-height:calc(100% - 52px)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+h2{font-size:13px;margin:0 0 10px;color:var(--tx2);text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+label{display:block;font-size:12px;color:var(--tx2);margin:10px 0 4px}
+input[type=number],input[type=text],select{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:7px 9px;font-size:13px;outline:none}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+.hint{font-size:11px;color:var(--tx2);margin-top:4px}
+button{background:var(--panel2);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer;font-size:13px}
+button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:transparent;color:#fff;font-weight:600}
+button.primary:disabled{opacity:.45;cursor:not-allowed}
+button.ghost{background:transparent}
+#drop{border:2px dashed var(--line);border-radius:12px;padding:26px;text-align:center;color:var(--tx2);transition:.15s;cursor:pointer}
+#drop.hi{border-color:var(--acc);background:#16203a;color:var(--tx)}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.card header{position:static;background:none;border:0;padding:9px 11px;gap:8px}
+.card header .nm{font-size:12px;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px}
+.badge{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--panel2);color:var(--tx2)}
+.badge.run{background:#243a6b;color:#bcd0ff}
+.badge.done{background:#123b31;color:#7ff0cd}
+.badge.err{background:#4a1c1c;color:#ffb3b3}
+.cmp{position:relative;width:100%;background:#05070c;aspect-ratio:1/1}
+.cmp img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none}
+/* .top is the ORIGINAL: it is clipped to the left of the divider, so the left
+   half of the wipe shows the original and the right half the upscaled result.
+   It must also stay ABOVE .bot (which comes later in the DOM and is unclipped),
+   otherwise the result image would simply cover the original and the wipe would
+   appear dead. */
+.cmp .top{clip-path:inset(0 calc(100% - var(--p,50%)) 0 0);z-index:1}
+/* before a result exists there is nothing to wipe: show the original in full */
+.cmp:not(.done) .top{clip-path:none}
+.cmp:not(.done) .bar,.cmp:not(.done) .knob{display:none}
+.cmp .bar{position:absolute;top:0;bottom:0;left:var(--p,50%);width:2px;background:var(--acc);box-shadow:0 0 8px var(--acc);pointer-events:none;z-index:2}
+.cmp .knob{position:absolute;top:50%;left:var(--p,50%);width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;background:var(--acc);border:2px solid #fff3;cursor:ew-resize;z-index:3}
+.cmp .tag{position:absolute;bottom:6px;font-size:10px;padding:2px 6px;border-radius:5px;background:#0009;color:#fff;z-index:4}
+.cmp .tag.l{left:6px}.cmp .tag.r{right:6px}
+.acts{display:flex;gap:8px;padding:9px 11px}
+.acts button{flex:1;font-size:12px;padding:6px 8px}
+#log{height:150px;overflow:auto;background:#080b12;border:1px solid var(--line);border-radius:8px;padding:8px;font:11px/1.45 Consolas,monospace;color:#9fb0c8;white-space:pre-wrap}
+#bar{height:6px;background:var(--panel2);border-radius:99px;overflow:hidden;margin:8px 0}
+#barfill{height:100%;width:0;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .25s}
+#lb{position:fixed;inset:0;background:#000d;backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;z-index:100}
+#lb.on{display:flex}
+#lb .box{max-width:94vw;max-height:92vh;display:flex;flex-direction:column;gap:8px;align-items:center}
+#lbstage{width:94vw;height:78vh;overflow:hidden;touch-action:none;cursor:grab}
+#lbstage:active{cursor:grabbing}
+#lbcmp{position:relative;width:100%;height:100%;aspect-ratio:auto;transform-origin:50% 50%;will-change:transform}
+#lb .nav{position:fixed;top:50%;transform:translateY(-50%);font-size:26px;padding:6px 16px;background:#0009;border:1px solid var(--line);color:#fff;border-radius:10px;z-index:120;cursor:pointer;user-select:none}
+#lb .nav:hover{border-color:var(--acc)}
+#lb .nav.prev{left:12px}#lb .nav.next{right:12px}
+#lb .close{position:fixed;top:16px;right:18px;font-size:20px;z-index:120;cursor:pointer}
+#lb .title{color:var(--tx2);font-size:12px}
+footer{padding:0 16px 16px;color:var(--tx2);font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>SeedVR2</h1>
+  <span class="pill" id="status">初始化中…</span>
+  <div class="devs" title="计算后端（切换会重新加载模型）">
+    <span class="lbl">DiT</span><select id="devDit"></select>
+    <span class="lbl">VAE</span><select id="devVae"></select>
+    <button id="devApply" disabled>切换</button>
+  </div>
+</header>
+
+<main>
+  <!-- ------------------------------- sidebar ------------------------------- -->
+  <aside>
+    <div class="panel">
+      <h2>模型 / 参数</h2>
+      <div id="info" class="hint" style="margin-bottom:6px">—</div>
+
+      <label>放大方式</label>
+      <select id="mode">
+        <option value="factor" selected>倍率 (相对输入短边)</option>
+        <option value="resolution">目标短边分辨率 (px)</option>
+      </select>
+
+      <div id="factorBox">
+        <label>放大倍率 <span id="factorVal">2.0×</span></label>
+        <input type="range" id="factor" min="1" max="6" step="0.25" value="2">
+      </div>
+      <div id="resBox" style="display:none">
+        <label>目标短边分辨率 (px)</label>
+        <input type="number" id="resolution" value="1080" min="64" max="4096" step="16">
+      </div>
+
+      <label>最大边长限制 (0 = 不限制)</label>
+      <input type="number" id="maxres" value="0" min="0" max="8192" step="16">
+
+      <div class="row">
+        <div>
+          <label>Seed</label>
+          <input type="number" id="seed" value="42">
+        </div>
+        <div>
+          <label>采样步数</label>
+          <input type="number" id="steps" value="1" min="1" max="50">
+        </div>
+      </div>
+      <div class="hint">该 3B 模型为 1 步蒸馏模型，步数 &gt; 1 仅用于实验。</div>
+
+      <label>CFG scale</label>
+      <input type="number" id="cfg" value="1" min="1" max="20" step="0.1">
+      <div class="hint">蒸馏模型要求 1.0。</div>
+
+      <label>色彩校正</label>
+      <select id="cc">
+        <option value="lab" selected>lab (感知 LAB)</option>
+        <option value="wavelet">wavelet</option>
+        <option value="wavelet_adaptive">wavelet_adaptive</option>
+        <option value="hsv">hsv</option>
+        <option value="adain">adain</option>
+        <option value="none">none</option>
+      </select>
+
+      <h2 style="margin-top:14px">VAE 分块 (高分辨率省显存但速度降低)</h2>
+      <label class="chk" title="按空间分块做 VAE 编码（与 Python --vae_encode_tiled 一致）">
+        <input type="checkbox" id="vaeEncTiled"> 编码分块 (encode tiled)
+      </label>
+      <label class="chk" title="按空间分块做 VAE 解码（与 Python --vae_decode_tiled 一致）">
+        <input type="checkbox" id="vaeDecTiled"> 解码分块 (decode tiled)
+      </label>
+      <div class="row">
+        <div>
+          <label>分块尺寸 (px)</label>
+          <input type="number" id="vaeTileSize" value="1024" min="64" step="16">
+        </div>
+        <div>
+          <label>分块重叠 (px)</label>
+          <input type="number" id="vaeTileOverlap" value="128" min="0" step="16">
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:12px">
+      <h2>进度</h2>
+      <div id="bar"><div id="barfill"></div></div>
+      <div class="hint" id="msg">—</div>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost" id="cancel">取消</button>
+        <button class="ghost" id="clearlog">清空日志</button>
+      </div>
+      <div id="log" style="margin-top:8px"></div>
+    </div>
+  </aside>
+
+  <!-- ------------------------------- workspace ------------------------------- -->
+  <section>
+    <div class="panel">
+      <h2>输入（支持拖入多张图片进行批处理）</h2>
+      <div id="drop">拖拽图片到此处，或<u>点击选择</u>（可多选）<div class="hint">支持 png / jpg / jpeg / bmp / webp</div></div>
+      <input type="file" id="file" multiple accept="image/*" style="display:none">
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="run" disabled>开始批处理</button>
+        <button id="dlall">下载全部结果</button>
+        <button id="clear">清空列表</button>
+      </div>
+      <label class="chk" title="先对全部图片做 VAE 编码，再统一 DiT 推理，最后统一 VAE 解码；模型整个批次只上传一次，避免逐张重复加载">
+        <input type="checkbox" id="latentCache">
+        启用 latent 缓存
+      </label>
+    </div>
+    <div id="grid"></div>
+  </section>
+</main>
+
+<div id="lb">
+  <div class="close" id="lbclose">✕</div>
+  <div class="nav prev" id="lbprev" title="上一张">‹</div>
+  <div class="nav next" id="lbnext" title="下一张">›</div>
+  <div class="box">
+    <div class="title" id="lbtitle"></div>
+    <div id="lbstage">
+      <div class="cmp done" id="lbcmp">
+        <img class="top" id="lbimgA">
+        <img class="bot" id="lbimgB">
+        <div class="bar"></div><div class="knob"></div>
+        <div class="tag l">原始</div><div class="tag r">放大</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+
+const state = { items: [], url2item: new Map(), lbIndex: 0, busy: false };
+
+/* ------------------------------- helpers ------------------------------- */
+function fmtBytes(n){ return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(2)+" MB"; }
+function shortName(n){ return n.length>26? n.slice(0,12)+"…"+n.slice(-10):n; }
+function safeName(n){ return n.replace(/\.[^.]+$/, "") + "_seedvr2.png"; }
+
+function paramsFor(item){
+  const mode = $("#mode").value;
+  const maxres = parseInt($("#maxres").value||"0",10)||0;
+  let res;
+  if(mode==="factor"){
+    const f = parseFloat($("#factor").value);
+    res = Math.max(64, Math.round(item.shortEdge * f));
+  } else {
+    res = parseInt($("#resolution").value||"1080",10)||1080;
+  }
+  if(maxres>0) res = Math.min(res, maxres);
+  return {
+    resolution: res,
+    max_resolution: maxres,
+    seed: parseInt($("#seed").value||"42",10),
+    steps: parseInt($("#steps").value||"1",10),
+    cfg_scale: parseFloat($("#cfg").value||"1"),
+    color_correction: $("#cc").value,
+    vae_encode_tiled: $("#vaeEncTiled").checked ? 1 : 0,
+    vae_decode_tiled: $("#vaeDecTiled").checked ? 1 : 0,
+    vae_tile_size: parseInt($("#vaeTileSize").value||"1024",10)||1024,
+    vae_tile_overlap: (v=> isNaN(v)?128:v)(parseInt($("#vaeTileOverlap").value,10))
+  };
+}
+
+/* ------------------------------- slider compare ------------------------------- */
+function bindCompare(el){
+  const knob = el.querySelector(".knob");
+  let dragging = false;
+  const set = e => {
+    const r = el.getBoundingClientRect();
+    let x = (e.clientX - r.left) / r.width;
+    x = Math.max(0, Math.min(1, x));
+    el.style.setProperty("--p", (x*100).toFixed(2)+"%");
+  };
+  const down = e => { dragging = true; set(e); e.preventDefault(); };
+  const move = e => { if(dragging) set(e); };
+  const up = () => { dragging = false; };
+  el.addEventListener("pointerdown", down);
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+/* ------------------------------- cards ------------------------------- */
+function addFiles(files){
+  for(const f of files){
+    if(!f.type.startsWith("image/") && !/\.(png|jpe?g|bmp|webp)$/i.test(f.name)) continue;
+    const item = { id:"i"+Math.random().toString(36).slice(2), file:f, name:f.name,
+                   size:f.size, srcUrl:URL.createObjectURL(f), outUrl:null,
+                   width:0, height:0, shortEdge:0, status:"queued", note:"" };
+    const img = new Image();
+    img.onload = () => {
+      item.width = img.naturalWidth; item.height = img.naturalHeight;
+      item.shortEdge = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.getElementById("w_"+item.id);
+      if(c) c.textContent = img.naturalWidth+"×"+img.naturalHeight;
+    };
+    img.src = item.srcUrl;
+    state.items.push(item);
+    renderCard(item);
+  }
+  updateRunBtn();
+}
+
+function cardEl(item){
+  const d = document.createElement("div");
+  d.className = "card";
+  d.id = "card_"+item.id;
+  d.innerHTML = `
+    <header>
+      <span class="nm" title="${item.name}">${shortName(item.name)}</span>
+      <span class="badge" id="b_${item.id}">排队中</span>
+      <span class="badge" id="w_${item.id}">—</span>
+    </header>
+    <div class="cmp" id="cmp_${item.id}">
+      <img class="top" src="${item.srcUrl}">
+      <img class="bot" id="t_${item.id}" style="display:none">
+      <div class="bar"></div><div class="knob"></div>
+      <div class="tag l">原始</div><div class="tag r" id="tr_${item.id}" style="display:none">放大</div>
+    </div>
+    <div class="acts">
+      <button data-act="preview" data-id="${item.id}">预览</button>
+      <button data-act="rerun" data-id="${item.id}">重新放大</button>
+      <button data-act="save" data-id="${item.id}" disabled>下载</button>
+    </div>
+    <div class="hint" id="n_${item.id}" style="padding:0 11px 9px"></div>`;
+  bindCompare(d.querySelector(".cmp"));
+  d.querySelector('[data-act="preview"]').onclick = () => openLightbox(item);
+  d.querySelector('[data-act="rerun"]').onclick = () => requeue(item);
+  d.querySelector('[data-act="save"]').onclick = () => saveItem(item);
+  return d;
+}
+
+function renderCard(item){
+  const grid = $("#grid");
+  grid.appendChild(cardEl(item));
+}
+
+function setBadge(item, cls, txt){
+  const b = document.getElementById("b_"+item.id);
+  if(!b) return;
+  b.className = "badge " + cls;
+  b.textContent = txt;
+}
+
+/* ------------------------------- batch ------------------------------- */
+async function runBatch(){
+  if(state.busy) return;
+  const pending = state.items.filter(i => i.status === "queued" || i.status === "err");
+  if(!pending.length) return;
+  if($("#latentCache").checked && pending.length > 0){ return runBatchCached(pending); }
+  state.busy = true; updateRunBtn();
+  for(const item of pending){
+    item.status = "run"; setBadge(item, "run", "推理中…");
+    const p = paramsFor(item);
+    const qs = Object.entries(p).map(([k,v]) => k+"="+encodeURIComponent(v)).join("&");
+    try{
+      const r = await fetch("/api/upscale?"+qs, { method:"POST", body:item.file,
+        headers:{ "Content-Type":"application/octet-stream" } });
+      if(!r.ok){ throw new Error(await r.text() || ("HTTP "+r.status)); }
+      const blob = await r.blob();
+      item.outUrl = URL.createObjectURL(blob);
+      item.status = "done"; setBadge(item, "done", "完成");
+      const cmp = document.getElementById("cmp_"+item.id);
+      const top = document.getElementById("t_"+item.id);
+      top.src = item.outUrl;
+      top.style.display = "";
+      if(cmp) cmp.classList.add("done");
+      document.getElementById("tr_"+item.id).style.display = "";
+      const btn = document.querySelector('[data-act="save"][data-id="'+item.id+'"]');
+      if(btn) btn.disabled = false;
+      document.getElementById("n_"+item.id).textContent =
+        "输出 " + fmtBytes(blob.size) + " · 目标短边 " + p.resolution + "px · seed " + p.seed;
+    }catch(e){
+      item.status = "err"; item.note = String(e.message||e);
+      setBadge(item, "err", "失败");
+      document.getElementById("n_"+item.id).textContent = item.note;
+    }
+  }
+  state.busy = false; updateRunBtn();
+}
+
+/* latent-cache batch: send everything at once, the engine runs
+   all VAE encodes -> all DiT passes -> all VAE decodes, so each model is
+   uploaded to the device only once for the whole batch. */
+async function runBatchCached(pending){
+  state.busy = true; updateRunBtn();
+  let dls = 0;
+  pending.forEach(it => { it.status = "run"; setBadge(it, "run", "排队中…"); });
+  const fd = new FormData();
+  const ress = [];
+  for(const it of pending){ fd.append("files", it.file, it.name); ress.push(paramsFor(it).resolution); }
+  const p = paramsFor(pending[0]);
+  const qs = Object.entries(p).map(([k,v]) => k+"="+encodeURIComponent(v)).join("&") +
+             "&resolutions=" + ress.join(",");
+  try{
+    const r = await fetch("/api/upscaleBatch?"+qs, { method:"POST", body: fd });
+    if(!r.ok) throw new Error(await r.text() || ("HTTP "+r.status));
+    const j = await r.json();
+    for(let i = 0; i < j.items.length; ++i){
+      const it = pending[i], res = j.items[i];
+      if(!res || !res.ok){ it.status = "err"; setBadge(it, "err", "失败");
+        document.getElementById("n_"+it.id).textContent = res ? "该张失败" : "未处理"; continue; }
+      const rb = await fetch("/api/result?id="+encodeURIComponent(res.id));
+      const blob = await rb.blob();
+      it.outUrl = URL.createObjectURL(blob);
+      it.status = "done"; setBadge(it, "done", "完成");
+      const cmp = document.getElementById("cmp_"+it.id);
+      const top = document.getElementById("t_"+it.id);
+      top.src = it.outUrl; top.style.display = "";
+      if(cmp) cmp.classList.add("done");
+      document.getElementById("tr_"+it.id).style.display = "";
+      const btn = document.querySelector('[data-act="save"][data-id="'+it.id+'"]');
+      if(btn) btn.disabled = false;
+      document.getElementById("n_"+it.id).textContent =
+        "latent 缓存批处理输出 " + fmtBytes(blob.size) + " · 目标短边 " + ress[i] + "px · seed " + p.seed;
+      dls++;
+    }
+  }catch(e){
+    for(const it of pending){ if(it.status === "run"){ it.status = "err"; setBadge(it, "err", "失败");
+      document.getElementById("n_"+it.id).textContent = String(e.message||e); } }
+  }
+  state.busy = false; updateRunBtn();
+}
+
+function updateRunBtn(){
+  const n = state.items.filter(i => i.status==="queued"||i.status==="err").length;
+  $("#run").disabled = state.busy || n===0 || !window.__ready;
+  $("#run").textContent = state.busy ? "处理中…" : ("开始批处理 (" + n + ")");
+}
+
+/* re-run a single image with the current parameters (keeps the old result visible
+   until the new one arrives) */
+function requeue(item){
+  if(!window.__ready){ return; }
+  item.status = "queued";
+  setBadge(item, "", "排队中");
+  document.getElementById("n_"+item.id).textContent = "已重新加入队列…";
+  updateRunBtn();
+  if(state.busy){
+    // the running batch iterates over a snapshot; start a new batch when it ends
+    const t = setInterval(() => {
+      if(!state.busy){ clearInterval(t); if(item.status==="queued") runBatch(); }
+    }, 400);
+  } else {
+    runBatch();
+  }
+}
+
+function saveItem(item){
+  if(!item.outUrl) return;
+  const a = document.createElement("a");
+  a.href = item.outUrl; a.download = safeName(item.name);
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+function dlAll(){
+  state.items.filter(i=>i.outUrl).forEach((it,i)=>setTimeout(()=>saveItem(it), i*250));
+}
+
+/* ------------------------------- lightbox ------------------------------- */
+function openLightbox(item){
+  const done = state.items.filter(i => i.outUrl);
+  const idx = done.indexOf(item);
+  if(idx < 0) return;
+  state.lbIndex = idx;
+  showLb();
+  $("#lb").classList.add("on");
+}
+function showLb(){
+  const done = state.items.filter(i => i.outUrl);
+  if(!done.length) return;
+  state.lbIndex = (state.lbIndex + done.length) % done.length;
+  const it = done[state.lbIndex];
+  $("#lbimgA").src = it.srcUrl;
+  $("#lbimgB").src = it.outUrl;
+  $("#lbtitle").textContent = it.name + "   (" + (state.lbIndex+1) + "/" + done.length + ")";
+  lbReset();
+}
+function closeLb(){ $("#lb").classList.remove("on"); }
+
+/* ------------------------------- polling ------------------------------- */
+let devList = [], devDirty = false, lastStatus = {};
+async function loadDevices(){
+  try{
+    const j = await (await fetch("/api/devices")).json();
+    devList = j.devices || [];
+    const lists = { "#devDit": j.devices || [], "#devVae": j.vae_devices || j.devices || [] };
+    for(const id of ["#devDit","#devVae"]){
+      const s = $(id); s.innerHTML = "";
+      for(const d of lists[id]){
+        const o = document.createElement("option");
+        o.value = d.name;
+        o.title = d.desc || "";
+        o.textContent = d.name + (d.type === "CPU" ? " (CPU)" : "");
+        s.appendChild(o);
+      }
+    }
+    if(j.dit) $("#devDit").value = j.dit;
+    if(j.vae) $("#devVae").value = j.vae;
+  }catch(e){}
+}
+function syncDevices(j){
+  lastStatus = j;
+  if(devList.length && !devDirty){
+    if(j.dit_device && $("#devDit").value !== j.dit_device) $("#devDit").value = j.dit_device;
+    if(j.vae_device && $("#devVae").value !== j.vae_device) $("#devVae").value = j.vae_device;
+  }
+  const changed = $("#devDit").value !== j.dit_device || $("#devVae").value !== j.vae_device;
+  $("#devApply").disabled = !changed || !j.ready || j.running;
+}
+
+async function poll(){
+  try{
+    const r = await fetch("/api/status"); const j = await r.json();
+    const p = $("#status");
+    window.__ready = j.ready;
+    if(j.ready){ p.className="pill ok"; p.textContent="模型就绪"; }
+    else { p.className="pill" + (j.failed?" bad":""); p.textContent = j.failed? "初始化失败" : "加载模型中…"; }
+    $("#info").textContent = j.info || "—";
+    $("#barfill").style.width = (j.percent||0)+"%";
+    $("#msg").textContent = (j.message||"") + (j.running? ("  [" + j.percent + "%]") : "");
+    syncDevices(j);
+    updateRunBtn();
+  }catch(e){ $("#status").className="pill bad"; $("#status").textContent="服务不可用"; }
+  try{
+    const r = await fetch("/api/log"); const t = await r.text();
+    const el = $("#log"); if(t!==el.textContent){ el.textContent=t; el.scrollTop=el.scrollHeight; }
+  }catch(e){}
+}
+setInterval(poll, 600); poll();
+
+/* ------------------------------- wiring ------------------------------- */
+$("#drop").onclick = () => $("#file").click();
+$("#file").onchange = e => addFiles(e.target.files);
+["dragenter","dragover"].forEach(ev => $("#drop").addEventListener(ev, e=>{e.preventDefault();$("#drop").classList.add("hi");}));
+["dragleave","drop"].forEach(ev => $("#drop").addEventListener(ev, e=>{e.preventDefault();$("#drop").classList.remove("hi");}));
+$("#drop").addEventListener("drop", e => { if(e.dataTransfer.files) addFiles(e.dataTransfer.files); });
+document.addEventListener("dragover", e=>e.preventDefault());
+document.addEventListener("drop", e => { e.preventDefault(); if(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) addFiles(e.dataTransfer.files); });
+
+$("#mode").onchange = () => {
+  const f = $("#mode").value === "factor";
+  $("#factorBox").style.display = f? "" : "none";
+  $("#resBox").style.display = f? "none" : "";
+};
+$("#factor").oninput = e => { $("#factorVal").textContent = parseFloat(e.target.value).toFixed(2)+"×"; };
+$("#run").onclick = runBatch;
+$("#dlall").onclick = dlAll;
+$("#clear").onclick = () => { state.items=[]; $("#grid").innerHTML=""; updateRunBtn(); };
+$("#cancel").onclick = () => fetch("/api/cancel", {method:"POST"});
+$("#devDit").onchange = () => { devDirty = true; syncDevices(lastStatus); };
+$("#devVae").onchange = () => { devDirty = true; syncDevices(lastStatus); };
+$("#devApply").onclick = async () => {
+  $("#devApply").disabled = true;
+  const q = "/api/backend?dit=" + encodeURIComponent($("#devDit").value) +
+            "&vae=" + encodeURIComponent($("#devVae").value);
+  try{ await fetch(q, { method:"POST" }); devDirty = false; }catch(e){ devDirty = true; }
+};
+loadDevices();
+$("#clearlog").onclick = () => { $("#log").textContent=""; fetch("/api/clearLog", {method:"POST"}); };
+
+$("#lbclose").onclick = closeLb;
+$("#lbprev").onclick = () => { state.lbIndex--; showLb(); };
+$("#lbnext").onclick = () => { state.lbIndex++; showLb(); };
+$("#lb").addEventListener("click", e => { if(e.target.id === "lb") closeLb(); });
+document.addEventListener("keydown", e => {
+  if(!$("#lb").classList.contains("on")) return;
+  if(e.key === "Escape") closeLb();
+  if(e.key === "ArrowLeft"){ state.lbIndex--; showLb(); }
+  if(e.key === "ArrowRight"){ state.lbIndex++; showLb(); }
+});
+/* ------------------------------- lightbox view -------------------------------
+   Wheel = zoom (anchored at the cursor), drag = pan when zoomed; the compare
+   slider is dragged from its knob/bar (or anywhere while at 1x). */
+const lbView = { z: 1, x: 0, y: 0 };
+let lbDrag = null;
+
+function lbApply(){
+  const stage = $("#lbstage");
+  const mx = Math.max(0, (lbView.z - 1) * stage.clientWidth  / 2);
+  const my = Math.max(0, (lbView.z - 1) * stage.clientHeight / 2);
+  lbView.x = Math.max(-mx, Math.min(mx, lbView.x));
+  lbView.y = Math.max(-my, Math.min(my, lbView.y));
+  $("#lbcmp").style.transform =
+    "translate(" + lbView.x.toFixed(2) + "px," + lbView.y.toFixed(2) + "px) scale(" + lbView.z.toFixed(4) + ")";
+}
+function lbReset(){ lbView.z = 1; lbView.x = 0; lbView.y = 0; lbApply(); }
+
+function lbSetPos(clientX){
+  // Invert the #lbcmp transform (translate(t) scale(z) about the centre) so the
+  // divider always lands exactly under the cursor, at any zoom / pan.
+  const r = $("#lbstage").getBoundingClientRect();
+  const W = Math.max(1, r.width);
+  const local = clientX - r.left;
+  const p = 0.5 + (local - 0.5*W - lbView.x) / (lbView.z * W);
+  $("#lbcmp").style.setProperty("--p", (Math.max(0, Math.min(1, p))*100).toFixed(2) + "%");
+}
+
+$("#lbstage").addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = $("#lbstage").getBoundingClientRect();
+  const ux = e.clientX - (r.left + r.width  / 2);
+  const uy = e.clientY - (r.top  + r.height / 2);
+  const old = lbView.z;
+  let z = old * (e.deltaY < 0 ? 1.2 : 1/1.2);
+  z = Math.max(1, Math.min(8, z));
+  if(Math.abs(z - old) < 1e-6) return;
+  const k = z / old;
+  lbView.x = ux - (ux - lbView.x) * k;
+  lbView.y = uy - (uy - lbView.y) * k;
+  lbView.z = z;
+  lbApply();
+}, { passive: false });
+
+$("#lbstage").addEventListener("pointerdown", e => {
+  const onCtl = e.target.closest && e.target.closest(".bar,.knob");
+  if(lbView.z > 1.001 && !onCtl){
+    lbDrag = { mode: "pan", sx: e.clientX, sy: e.clientY, px: lbView.x, py: lbView.y };
+  } else {
+    lbDrag = { mode: "cmp" };
+    lbSetPos(e.clientX);
+  }
+  try { $("#lbstage").setPointerCapture(e.pointerId); } catch(_){}
+  e.preventDefault();
+});
+$("#lbstage").addEventListener("pointermove", e => {
+  if(!lbDrag) return;
+  if(lbDrag.mode === "pan"){
+    lbView.x = lbDrag.px + (e.clientX - lbDrag.sx);
+    lbView.y = lbDrag.py + (e.clientY - lbDrag.sy);
+    lbApply();
+  } else {
+    lbSetPos(e.clientX);
+  }
+});
+["pointerup","pointercancel"].forEach(ev =>
+  $("#lbstage").addEventListener(ev, () => { lbDrag = null; }));
+</script>
+</body>
+</html>
